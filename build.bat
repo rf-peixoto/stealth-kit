@@ -44,7 +44,7 @@ if /I "%~1"=="--obfuscate" goto :obfuscate
 REM ----------------------------------------------------------------- plain build
 REM Compile from inside build\ so .obj files land there (avoids /Fo quoting).
 pushd "%BUILD%"
-for %%N in (example report guard) do (
+for %%N in (example report guard guard_corrupt) do (
     echo CC %%N
     cl %CFLAGS% %INC% "%ROOT%examples\%%N.c" %LIBSRC% /Fe:"%%N.exe" %LIBS%
     if errorlevel 1 ( popd & goto :error )
@@ -71,7 +71,7 @@ if not exist "%OBFDIR%" mkdir "%OBFDIR%"
 echo == obfuscating sources (tools\cobfuscate.py) ==
 %PY% "%ROOT%tools\cobfuscate.py" %LIBSRC% -o "%OBFDIR%\envcheck.c" %SEEDARG% --stats
 if errorlevel 1 goto :error
-for %%N in (example report guard) do (
+for %%N in (example report guard guard_corrupt) do (
     %PY% "%ROOT%tools\cobfuscate.py" "%ROOT%examples\%%N.c" -o "%OBFDIR%\%%N.c" %SEEDARG% --stats
     if errorlevel 1 goto :error
 )
@@ -82,7 +82,7 @@ echo.
 echo == compiling obfuscated sources ==
 REM Compile from inside build\obf\ so .obj files land there (avoids /Fo quoting).
 pushd "%OBFDIR%"
-for %%N in (example report guard) do (
+for %%N in (example report guard guard_corrupt) do (
     echo CC %%N.obf
     cl %CFLAGS% %OBFW% %INC% "%OBFDIR%\%%N.c" "%OBFDIR%\envcheck.c" /Fe:"%BUILD%\%%N.obf.exe" %LIBS%
     if errorlevel 1 ( popd & goto :error )

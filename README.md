@@ -32,10 +32,12 @@ envcheck-lib/
 │   └── envcheck.h                 # public API + env_report_t struct
 ├── src/
 │   └── envcheck.c                 # library implementation (no main) — the one the builds use
+├── envcheck.c                     # (stray duplicate of src/envcheck.c — see note below)
 ├── examples/
 │   ├── example.c                  # minimal driver: prints the report as JSON
 │   ├── report.c                   # full per-signal breakdown + scores + percentage
-│   ├── guard.c                    # DESTRUCTIVE enforcement example (self-deletes)
+│   ├── guard.c                    # DESTRUCTIVE enforcement example (self-DELETES)
+│   ├── guard_corrupt.c            # DESTRUCTIVE enforcement variant (self-CORRUPTS)
 │   └── precompiled/               # prebuilt, obfuscated+stripped guard, for inspection
 │       ├── guard.obf.stripped     #   Linux x86-64 ELF
 │       └── guard.obf.stripped.exe #   Windows x64 PE32+
@@ -48,6 +50,12 @@ envcheck-lib/
 Build output goes to `build/` (and obfuscated sources to `build/obf/`); both are
 git-ignored.
 
+> **Note — duplicate `envcheck.c`.** There is an `envcheck.c` at the repo root
+> *and* at `src/envcheck.c`. Both the `build.sh` and `build.bat` scripts compile
+> **`src/envcheck.c`**; the root-level copy is not referenced by anything and is
+> almost certainly a stray left over from the reorganization. Delete the root
+> `envcheck.c` to avoid editing the wrong file and drifting the two out of sync.
+
 ### What each piece is
 
 | Path | What it is |
@@ -57,6 +65,7 @@ git-ignored.
 | `examples/example.c` | Smallest possible driver: runs `env_inspect()` and prints the report as JSON. |
 | `examples/report.c` | Human-readable harness: per-signal breakdown with weights, VM/analysis subtotals, and a heuristic VM-likelihood percentage. Takes `--json`, `--no-ptrace`, `--no-backdoor`, `--sleep-skew`. |
 | `examples/guard.c` | **Destructive** enforcement example: if the combined score ≥ `GUARD_THRESHOLD`, it deletes its own executable and exits. Test with `GUARD_DRY_RUN=1` first. |
+| `examples/guard_corrupt.c` | **Destructive** variant that **overwrites** its own executable with a random value instead of deleting it (self-deletion trips some AV heuristics). Same threshold and `GUARD_DRY_RUN=1` dry-run. See "The two guard variants". |
 | `examples/precompiled/guard.obf.stripped` | A prebuilt `guard` for **Linux x86-64** (ELF), with both its own and envcheck's strings obfuscated, then stripped. For `strings`/reverse-engineering inspection — see "Inspecting the precompiled binaries". |
 | `examples/precompiled/guard.obf.stripped.exe` | The same, cross-compiled for **Windows x64** (PE32+, MinGW-w64). |
 | `tools/cobfuscate.py` | The string obfuscator (Part 2). Pure Python 3, no dependencies. |
@@ -68,7 +77,7 @@ git-ignored.
 ## Quick start
 
 ```sh
-./build.sh                 # compile the examples            -> build/report, build/guard, build/example, build/demo
+./build.sh                 # compile the examples  -> build/{report,guard,guard_corrupt,example,demo}
 ./build.sh --obfuscate     # obfuscate every source, then compile  -> build/*.obf
 ./build.sh --obfuscate --seed 1234   # reproducible obfuscation
 ./build.sh clean           # remove build/
@@ -168,6 +177,37 @@ CFLAGS="-O2 -DGUARD_THRESHOLD=14" ./build.sh
 > debugger present, so with this threshold the binary self-deletes on many
 > legitimate VMs. Measure against your real target fleet, and prefer gating on
 > `analysis_score` (active debugging) over `vm_score` (merely virtualized).
+
+### The two guard variants
+
+`guard.c` and `guard_corrupt.c` are the same enforcement logic with different
+consequences when tripped. Both touch **only their own executable**, both honour
+`GUARD_THRESHOLD` and `GUARD_DRY_RUN=1`, and both carry the same threshold
+warning above.
+
+| | `guard.c` | `guard_corrupt.c` |
+|---|---|---|
+| Action when tripped | Deletes its own executable | Overwrites its own executable with a random value `0..9999` (truncating it to a few bytes) |
+| Why you'd pick it | Simplest; leaves nothing behind | Self-deletion is flagged as malware-like by some AV/EDR; overwriting in place is a gentler signal and leaves a corrupt-but-present file |
+
+```sh
+GUARD_DRY_RUN=1 ./build/guard_corrupt   # report what it WOULD do, touch nothing  <-- test first!
+./build/guard_corrupt                   # live: overwrites its binary + exits if tripped
+```
+
+**How the overwrite works (important).** A *running* executable cannot rewrite
+its own on-disk image: on Linux `open()`/`truncate()` on the running file return
+`ETXTBSY` ("text file busy"), and on Windows the image is write-locked while the
+process runs. So — exactly as `guard.c` hands its delete to a detached helper —
+`guard_corrupt.c` arms a detached helper (`/bin/sh` on Linux, `cmd.exe` on
+Windows) that waits for this process to exit and *then* overwrites the file. The
+binary is clobbered the instant the guarded process ends. The random value is
+different each run, so the corrupted file isn't a constant signature either.
+
+> The overwrite is deliberately simple (write a random number as the whole file,
+> truncating the binary). If you'd rather keep the original file size — e.g. so
+> it looks less obviously truncated — overwrite each byte with a random value
+> instead; the helper command is the only thing you'd change.
 
 ### envcheck caveats (read these)
 
@@ -383,11 +423,11 @@ showcase (6 → 0).
 
 `./build.sh --obfuscate` chains everything:
 
-1. Runs `tools/cobfuscate.py` over `src/envcheck.c`, the three `examples/*.c`,
+1. Runs `tools/cobfuscate.py` over `src/envcheck.c`, the four `examples/*.c`,
    and `demo/demo.c`, writing obfuscated sources to `build/obf/`.
 2. Compiles each obfuscated example against the obfuscated library into
-   `build/report.obf`, `build/guard.obf`, `build/example.obf`, and the
-   standalone `build/demo.obf`.
+   `build/report.obf`, `build/guard.obf`, `build/guard_corrupt.obf`,
+   `build/example.obf`, and the standalone `build/demo.obf`.
 
 ```sh
 ./build.sh --obfuscate --seed 1234

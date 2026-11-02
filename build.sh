@@ -23,7 +23,7 @@ INC="-I${ROOT}/include"
 LIB_SRC="${ROOT}/src/envcheck.c"
 BUILD="${ROOT}/build"
 OBF_DIR="${BUILD}/obf"                     # obfuscated sources land here
-EXAMPLES=(example report guard)            # examples/<name>.c  (link the library)
+EXAMPLES=(example report guard guard_corrupt)   # examples/<name>.c (link the library)
 OBF="${PYTHON} ${ROOT}/tools/cobfuscate.py"
 
 # Extra flags needed only for obfuscated builds: an obfuscated literal used as a
