@@ -24,27 +24,44 @@ run the obfuscator over every source and then compile the result.
 
 ```
 envcheck-lib/
-├── README.md
-├── build.sh              # builds examples; --obfuscate runs cobfuscate first
+├── README.md                      # this file
+├── build.sh                       # Linux/macOS build; --obfuscate runs cobfuscate first
+├── build.bat                      # Windows/MSVC build; "obfuscate" arg does the same
 ├── .gitignore
 ├── include/
-│   └── envcheck.h        # public API + env_report_t struct
+│   └── envcheck.h                 # public API + env_report_t struct
 ├── src/
-│   └── envcheck.c        # library implementation (no main)
+│   └── envcheck.c                 # library implementation (no main) — the one the builds use
 ├── examples/
-│   ├── example.c         # minimal driver: prints the report as JSON
-│   ├── report.c          # full per-signal breakdown + scores + percentage
-│   └── guard.c           # DESTRUCTIVE enforcement example (self-deletes)
-│   ├── precompiled
-│   └── guard.obf.stripped # envcheck + cobfuscate guard.c elf binary
+│   ├── example.c                  # minimal driver: prints the report as JSON
+│   ├── report.c                   # full per-signal breakdown + scores + percentage
+│   ├── guard.c                    # DESTRUCTIVE enforcement example (self-deletes)
+│   └── precompiled/               # prebuilt, obfuscated+stripped guard, for inspection
+│       ├── guard.obf.stripped     #   Linux x86-64 ELF
+│       └── guard.obf.stripped.exe #   Windows x64 PE32+
 ├── tools/
-│   └── cobfuscate.py     # the string obfuscator
+│   └── cobfuscate.py              # the string obfuscator
 └── demo/
-    └── demo.c            # small sample program the obfuscator transforms
+    └── demo.c                     # small sample program the obfuscator transforms
 ```
 
 Build output goes to `build/` (and obfuscated sources to `build/obf/`); both are
 git-ignored.
+
+### What each piece is
+
+| Path | What it is |
+|------|------------|
+| `include/envcheck.h` | Public API: the `env_report_t` struct, `env_options_t`, and the four functions (`env_default_options`, `env_inspect`, `env_layout_matches`, `env_report_to_json`). Include this in your project. |
+| `src/envcheck.c` | The inspect-only library implementation. No `main()` — you link it into your own program (or into the example drivers below). |
+| `examples/example.c` | Smallest possible driver: runs `env_inspect()` and prints the report as JSON. |
+| `examples/report.c` | Human-readable harness: per-signal breakdown with weights, VM/analysis subtotals, and a heuristic VM-likelihood percentage. Takes `--json`, `--no-ptrace`, `--no-backdoor`, `--sleep-skew`. |
+| `examples/guard.c` | **Destructive** enforcement example: if the combined score ≥ `GUARD_THRESHOLD`, it deletes its own executable and exits. Test with `GUARD_DRY_RUN=1` first. |
+| `examples/precompiled/guard.obf.stripped` | A prebuilt `guard` for **Linux x86-64** (ELF), with both its own and envcheck's strings obfuscated, then stripped. For `strings`/reverse-engineering inspection — see "Inspecting the precompiled binaries". |
+| `examples/precompiled/guard.obf.stripped.exe` | The same, cross-compiled for **Windows x64** (PE32+, MinGW-w64). |
+| `tools/cobfuscate.py` | The string obfuscator (Part 2). Pure Python 3, no dependencies. |
+| `demo/demo.c` | A tiny self-contained program used to showcase the obfuscator's before/after (6 clear-text strings → 0). |
+| `build.sh` / `build.bat` | One-command builds for Linux/macOS and Windows respectively (Part 3). |
 
 ---
 
@@ -59,6 +76,19 @@ git-ignored.
 
 Override the toolchain with environment variables:
 `CC=clang CFLAGS="-O3" PYTHON=python3.12 ./build.sh`.
+
+On **Windows**, use `build.bat` from a *x64 Native Tools Command Prompt for VS*
+(so `cl.exe` and `python` are on PATH):
+
+```bat
+build.bat                 :: compile the examples          -> build\*.exe
+build.bat obfuscate       :: obfuscate every source, then compile -> build\*.obf.exe
+build.bat obfuscate 1234  :: reproducible obfuscation
+build.bat clean
+```
+
+A `cl.exe` build keeps debug info in a separate `.pdb`, so function names are not
+embedded in the `.exe` — there is no separate `strip` step on Windows.
 
 ---
 
@@ -368,7 +398,47 @@ diff <(./build/report --no-backdoor --no-ptrace) \
 ```
 
 Add `--seed N` for reproducible builds; omit it for a different obfuscation each
-run.
+run. On Windows the same thing is `build.bat obfuscate 1234`.
+
+---
+
+## Inspecting the precompiled binaries
+
+`examples/precompiled/` holds a prebuilt `guard` — the enforcement example — with
+**both its own strings and all of envcheck's signature strings obfuscated**, then
+stripped. Two targets:
+
+| File | Platform | Built with |
+|------|----------|------------|
+| `guard.obf.stripped`     | Linux x86-64 (ELF)   | `gcc` + `cobfuscate.py`, then `strip` |
+| `guard.obf.stripped.exe` | Windows x64 (PE32+)  | `x86_64-w64-mingw32-gcc` + `cobfuscate.py`, then `-s` |
+
+They are there so you can confirm the obfuscation holds up under a `strings`
+scan. For example:
+
+```sh
+# Linux
+strings examples/precompiled/guard.obf.stripped \
+  | grep -iE 'vmware|ghidra|frida|cuckoo|qemu|vbox'          # -> (nothing)
+
+# Windows signatures (names, driver files, pipes) — e.g. with Sysinternals strings
+strings examples\precompiled\guard.obf.stripped.exe \
+  | findstr /I "VBoxMiniRdrDN vmmouse ghidra frida cuckoo"   # -> (nothing)
+```
+
+Against an equivalent *plain* build the same scans return dozens to hundreds of
+hits (the Windows code path alone carries ~500 signature strings: registry
+service paths, driver filenames, VM/sandbox named pipes). After obfuscation the
+only clear text left is the file-scope JSON template field names (not signatures)
+and dynamic-linker import names (`ptrace`, `unlink`, …), which can't be removed
+without static linking.
+
+**Caveats for your analysis.** This defeats static inspection (`strings`, reading
+`.rodata` in a disassembler), *not* a running debugger: the strings are
+reconstructed in memory at runtime, so a live debugger or a memory dump recovers
+them. Also, the `.exe` here was cross-compiled with MinGW; the MSVC-only probes
+(SEH `int 3`, the x86 VMware backdoor) are no-ops in it — rebuild with
+`build.bat obfuscate` on a real MSVC toolchain to exercise those.
 
 ---
 
